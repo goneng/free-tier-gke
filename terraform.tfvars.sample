@@ -4,7 +4,7 @@ zone       = "northamerica-northeast1-c"
 
 gke_cluster_name = "playground"
 
-primary_ip_cidr          = "192.168.0.0/26" # max node IPs = 64 (max nodes = 60; 4 IPs reservered in every VPC)
+primary_ip_cidr          = "192.168.0.0/26" # max node IPs = 64 (max nodes = 60; 4 IPs reserved in every VPC)
 max_pods_per_node        = 32               # max pods per node <= half of max node IPs
 cluster_ipv4_cidr_block  = "10.0.0.0/18"    # max pod IPs = 15360 (60 * 256), CIDR must be able to cover for all the potential IPs
 services_ipv4_cidr_block = "10.1.0.0/20"

@@ -1,11 +1,15 @@
 # Free-tier GKE Cluster
-[GKE Cluster](https://registry.terraform.io/providers/hashicorp/google/latest/docs/resources/container_cluster)
-
-[GKE Container Node Pool](https://registry.terraform.io/providers/hashicorp/google/latest/docs/resources/container_node_pool)
 
 It's not 100% free, but with my 1 node setup, you can pay as low as ~$9USD/mth for a fully managed Kubernetes cluster.  This works by taking advantage of Google [always free](https://cloud.google.com/free/docs/gcp-free-tier) tier which waives the management fee of one **zonal** GKE cluster, so you only have to pay for your nodes.  Combine this with using ~~[preemptible VMs](https://cloud.google.com/compute/docs/instances/preemptible)~~ [Spot VMs](https://cloud.google.com/kubernetes-engine/docs/concepts/spot-vms) as your nodes and you'll have some spectacular savings.
 
-This is great if you're looking for a small k8s cluster that more closely resembles what you might see in the real world (not that [Minikube](https://kubernetes.io/docs/tasks/tools/install-minikube/) or [MicroK8s](https://microk8s.io/) isn't good as a learning tool -- it's just not the same).  Here, you can also scale in/out your cluster easily if you want test some features or add-ons (like service meshes!).
+This is great if you're looking for a small k8s cluster that more closely resembles what you might see in the real world (not that [Minikube](https://kubernetes.io/docs/tasks/tools/install-minikube/) or [MicroK8s](https://microk8s.io/) isn't good as a learning tool -- it's just not the same).  Here, you can also scale up/down your cluster easily if you want to test some features or add-ons (like service meshes!).
+
+### See also
+
+**Terraform Docs for GKE**
+
+- [GKE Cluster](https://registry.terraform.io/providers/hashicorp/google/latest/docs/resources/container_cluster)
+- [GKE Container Node Pool](https://registry.terraform.io/providers/hashicorp/google/latest/docs/resources/container_node_pool)
 
 ## GKE vs EKS vs AKS
 I'm going to use a single node (2CPUs/4GB memory) Kubernetes cluster as the basis for comparison between the 3 major cloud providers (*prices subject to change -- please check cloud provider website for latest numbers*).  The math is shown below, but it doesn't take an extreme couponer to figure out which is the best deal.
@@ -22,11 +26,11 @@ I'm going to use a single node (2CPUs/4GB memory) Kubernetes cluster as the basi
 - [free cluster management](https://azure.microsoft.com/en-ca/pricing/details/kubernetes-service/)
 - B2S @ $34USD/mth ([Spot](https://azure.microsoft.com/en-us/pricing/spot/) instances available at up to 90% savings). This only applies to non-default node pools as the default node pool is also the [System Node Pool](https://learn.microsoft.com/en-us/azure/aks/use-system-pools?tabs=azure-cli)
 
-Azure's AKS combined with Spot instances are actually incredibly competitive in pricing vs ~~preemptibles~~ spots, but in my mind, ~~preemptibles~~ spots have the edge due to ease of use -- no price bidding and a generably more reliable/predictable uptime (in my use don't think I've had any node get terminated before 22hrs).
+Azure's AKS combined with Spot instances are actually incredibly competitive in pricing vs ~~preemptibles~~ spots, but in my mind, ~~preemptibles~~ spots have the edge due to ease of use -- no price bidding and a generally more reliable/predictable uptime (in my use don't think I've had any node get terminated before 22hrs).
 
 
 ## IMPORTANT
-The key to getting the savings here is to limit the amount of nodes in your cluster (until you need it).  The 3 key settings to ensure this is `location`, `node_locations` and `node_count` (or `initial_node_count`).  
+The key to getting the savings here is to limit the amount of nodes in your cluster (until you need it).  The 3 key settings to ensure this is `location`, `node_locations` and `node_count` (or `initial_node_count`).
 
 `location` specifies where to place the cluster (masters).  By specifying a zone, you have a free, zonal cluster.  If you replaced it with a region instead, it becomes a regional cluster -- ideal for a production cluster, but not part of the free tier offering.
 
@@ -52,9 +56,9 @@ gcloud services enable --async \
 
 
 ## eBPF, Cilium and GKE Dataplane V2
-I've been learning a lot about [eBPF](https://ebpf.io/) and experimenting with [Cilium](https://cilium.io/) in particular.  New in [v0.4.0](https://github.com/Neutrollized/free-tier-gke/blob/master/CHANGELOG.md#040---2021-09-09), you will have the option of enabling [GKE Dataplane V2](https://cloud.google.com/blog/products/containers-kubernetes/bringing-ebpf-and-cilium-to-google-kubernetes-engine) which leverages the power of eBPF and Cilium to provide enhanced security and observability in your GKE cluster.  
+I've been learning a lot about [eBPF](https://ebpf.io/) and experimenting with [Cilium](https://cilium.io/) in particular.  New in [v0.4.0](https://github.com/Neutrollized/free-tier-gke/blob/master/CHANGELOG.md#040---2021-09-09), you will have the option of enabling [GKE Dataplane V2](https://cloud.google.com/blog/products/containers-kubernetes/bringing-ebpf-and-cilium-to-google-kubernetes-engine) which leverages the power of eBPF and Cilium to provide enhanced security and observability in your GKE cluster.
 
-When Dataplane V2 is enabled, one of the things you may notice is the absence of **kube-proxy** in the cluster.  That's becuase it has been replaced by Cilium CNI!  It replaces iptables as component that controls connections between pods (and between nodes). Iptables is an old-school (albeit, extensive and powerful) program that allows the configuration of (mainly static) IP packet filter rules in a Linux kernel firewall and was never meant for something as dynamic as a Kubernetes environment.  The sheer number of iptables rules in very large clusters makes scaling difficult and hence a kube-proxy replacement such as Cilium would be very welcomed in such a scenario.
+When Dataplane V2 is enabled, one of the things you may notice is the absence of **kube-proxy** in the cluster.  That's because it has been replaced by Cilium CNI!  It replaces iptables as component that controls connections between pods (and between nodes). Iptables is an old-school (albeit, extensive and powerful) program that allows the configuration of (mainly static) IP packet filter rules in a Linux kernel firewall and was never meant for something as dynamic as a Kubernetes environment.  The sheer number of iptables rules in very large clusters makes scaling difficult and hence a kube-proxy replacement such as Cilium would be very welcomed in such a scenario.
 
 If you wish to install open-sourced Cilium, you will need to set `dataplane_v2_enabled = false` and set a node taint (see [terraform.tfvars.sample](./terraform.tfvars.sample) for details) and if you wish to use DPV2, then make sure you don't set the taint!
 
@@ -67,7 +71,7 @@ Hubble is an observability platform built on top of Cilium and as of [v0.14.0](h
 ## Private GKE Cluster and Nodes
 As of [v0.8.0](https://github.com/Neutrollized/free-tier-gke/blob/master/CHANGELOG.md#080---2022-07-15), you will have the option of provisioning a private GKE nodes.  Doing so will also provision a [Cloud NAT](https://cloud.google.com/nat/docs/overview) router in order for your nodes to get internet -- but this, of course will incur extra costs.
 
-If you decide to go the full private GKE cluster route (private GKE endpoint/control-plane AND private GKE nodes) then it will provision an additional /29 subnet that will house a VM running [tinyproxy](https://tinyproxy.github.io/) that will act as a forwarding proxy to the private GKE endpoint. 
+If you decide to go the full private GKE cluster route (private GKE endpoint/control-plane AND private GKE nodes) then it will provision an additional /29 subnet that will house a VM running [tinyproxy](https://tinyproxy.github.io/) that will act as a forwarding proxy to the private GKE endpoint.
 
 See this [Medium article](https://medium.com/google-cloud/accessing-gke-private-clusters-through-iap-14fedad694f8) if you want to see how the network traffic flows in this setup.
 
@@ -90,7 +94,7 @@ Starting in [v0.15.0](https://github.com/Neutrollized/free-tier-gke/blob/master/
 
 ```
 terraform test
-```   
+```
 
 - sample output:
 ```console
