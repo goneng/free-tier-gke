@@ -1,284 +1,263 @@
-#------------------------------------------------------
-# GKE Cluster
-# https://registry.terraform.io/providers/hashicorp/google/latest/docs/resources/container_cluster.html#example-usage---with-a-separately-managed-node-pool-recommended
-#------------------------------------------------------
-resource "google_container_cluster" "primary" {
-  provider = google-beta
 
-  name                = var.gke_cluster_name
-  location            = var.regional ? var.region : var.zone
-  deletion_protection = var.deletion_protection
+# AWS Provider
+provider "aws" {
+  region = var.aws_region
+}
 
-  # Can be single or multi-zone, as
-  # https://www.terraform.io/docs/providers/google/r/container_cluster.html#node_locations
-  node_locations = var.node_locations
+# --- Networking ---
 
-  confidential_nodes {
-    enabled = var.confidential_nodes_enabled
+# VPC
+resource "aws_vpc" "main" {
+  cidr_block = var.vpc_cidr_block
+
+  tags = {
+    Name = "${var.cluster_name}-vpc"
+  }
+}
+
+# Public Subnets
+resource "aws_subnet" "public" {
+  count             = length(var.public_subnet_cidrs)
+  vpc_id            = aws_vpc.main.id
+  cidr_block        = var.public_subnet_cidrs[count.index]
+  availability_zone = data.aws_availability_zones.available.names[count.index]
+  map_public_ip_on_launch = true
+
+  tags = {
+    Name = "${var.cluster_name}-public-subnet-${count.index}"
+    "kubernetes.io/cluster/${var.cluster_name}" = "owned"
+    "kubernetes.io/role/elb" = "1" # Tag required for AWS Load Balancer Controller
+  }
+}
+
+# Private Subnets
+resource "aws_subnet" "private" {
+  count             = length(var.private_subnet_cidrs)
+  vpc_id            = aws_vpc.main.id
+  cidr_block        = var.private_subnet_cidrs[count.index]
+  availability_zone = data.aws_availability_zones.available.names[count.index]
+  map_public_ip_on_launch = false # Nodes should not have public IPs
+
+  tags = {
+    Name = "${var.cluster_name}-private-subnet-${count.index}"
+    "kubernetes.io/cluster/${var.cluster_name}" = "owned"
+    "kubernetes.io/role/internal-elb" = "1" # Tag required for internal LBs
+  }
+}
+
+# Internet Gateway
+resource "aws_internet_gateway" "main" {
+  vpc_id = aws_vpc.main.id
+
+  tags = {
+    Name = "${var.cluster_name}-igw"
+  }
+}
+
+# NAT Gateway (requires an Elastic IP and a public subnet)
+resource "aws_eip" "nat" {
+  vpc = true
+}
+
+resource "aws_nat_gateway" "main" {
+  allocation_id = aws_eip.nat.id
+  subnet_id     = aws_subnet.public[0].id # Place NAT GW in the first public subnet
+
+  tags = {
+    Name = "${var.cluster_name}-nat-gw"
   }
 
-  # this node_config block is for the "default pool", which we are not using as per recommendations:
-  # https://registry.terraform.io/providers/hashicorp/google/latest/docs/resources/container_cluster#node_config
-  # however, it is required if you're going to use confidential nodes otherwise it will complain about the 
-  # machine family not being set to N2D, even though is in the "google_container_node_pool" resource
-  dynamic "node_config" {
-    for_each = var.confidential_nodes_enabled ? [1] : []
-    content {
-      machine_type = var.machine_type
+  # Required for AWS to properly find the NAT Gateway
+  depends_on = [aws_internet_gateway.main]
+}
 
-      labels = {
-        mesh_id = "proj-${var.project_id}"
-      }
-    }
+# Route Table for Public Subnets
+resource "aws_route_table" "public" {
+  vpc_id = aws_vpc.main.id
+
+  route {
+    cidr_block = "0.0.0.0/0"
+    gateway_id = aws_internet_gateway.main.id
   }
 
-  # We can't create a cluster with no node pool defined, but we want to only use
-  # separately managed node pools. So we create the smallest possible default
-  # node pool and immediately delete it.
-  remove_default_node_pool = true
-  initial_node_count       = var.initial_node_count
+  tags = {
+    Name = "${var.cluster_name}-public-rt"
+  }
+}
 
-  enable_shielded_nodes = var.enable_shielded_nodes
-  enable_tpu            = var.enable_tpu
+# Associate Public Route Table with Public Subnets
+resource "aws_route_table_association" "public" {
+  count          = length(aws_subnet.public)
+  subnet_id      = aws_subnet.public[count.index].id
+  route_table_id = aws_route_table.public.id
+}
 
-  network    = google_compute_network.k8s.id
-  subnetwork = google_compute_subnetwork.k8s.id
+# Route Table for Private Subnets
+resource "aws_route_table" "private" {
+  vpc_id = aws_vpc.main.id
 
-  # ip_allocation_policy left empty here to let GCP pick
-  # otherwise you will have to define your own secondary CIDR ranges
-  # which I will probably look to add at a later date
-  networking_mode = var.networking_mode
-  ip_allocation_policy {
-    cluster_ipv4_cidr_block  = var.cluster_ipv4_cidr_block
-    services_ipv4_cidr_block = var.services_ipv4_cidr_block
+  route {
+    cidr_block = "0.0.0.0/0"
+    nat_gateway_id = aws_nat_gateway.main.id # Route internet traffic via NAT GW
   }
 
-  # https://cloud.google.com/kubernetes-engine/docs/how-to/flexible-pod-cidr#cidr_ranges_for_clusters
-  default_max_pods_per_node = var.max_pods_per_node
-
-  dynamic "private_cluster_config" {
-    for_each = var.enable_private_nodes || var.enable_private_endpoint ? [1] : []
-    content {
-      enable_private_endpoint = var.enable_dns_endpoint ? true : var.enable_private_endpoint
-      enable_private_nodes    = var.enable_private_nodes
-      master_ipv4_cidr_block  = var.enable_dns_endpoint ? null : var.master_ipv4_cidr_block
-    }
+  tags = {
+    Name = "${var.cluster_name}-private-rt"
   }
+}
 
-  dynamic "control_plane_endpoints_config" {
-    for_each = var.enable_dns_endpoint ? [1] : []
-    content {
-      dns_endpoint_config {
-        allow_external_traffic = var.dns_endpoint_allow_ext_traffic
-      }
-    }
-  }
+# Associate Private Route Table with Private Subnets
+resource "aws_route_table_association" "private" {
+  count          = length(aws_subnet.private)
+  subnet_id      = aws_subnet.private[count.index].id
+  route_table_id = aws_route_table.private.id
+}
 
-  master_authorized_networks_config {
-    dynamic "cidr_blocks" {
-      for_each = var.enable_private_endpoint && !var.enable_dns_endpoint ? [1] : []
-      content {
-        cidr_block   = var.enable_private_endpoint && !var.enable_dns_endpoint ? var.iap_proxy_ip_cidr : var.master_authorized_network_cidr
-        display_name = "allowed-cidr"
-      }
-    }
-  }
+# Data source for Availability Zones in the selected region
+data "aws_availability_zones" "available" {
+  state = "available"
+}
 
-  # https://cloud.google.com/kubernetes-engine/docs/how-to/dataplane-v2#create-cluster
-  # NOTE: DPv2 has its own network policy enforcement built-in
-  #       and this should be set to 'false' when DPv2 is enabled
-  network_policy {
-    enabled = var.network_policy_enabled
-  }
+# --- IAM Roles for EKS ---
 
-  datapath_provider = var.dataplane_v2_enabled ? "ADVANCED_DATAPATH" : "DATAPATH_PROVIDER_UNSPECIFIED"
+# EKS Cluster Role
+resource "aws_iam_role" "eks_cluster_role" {
+  name = "${var.cluster_name}-eks-cluster-role"
 
-  # https://cloud.google.com/kubernetes-engine/docs/how-to/configure-cilium-network-policy
-  enable_cilium_clusterwide_network_policy = var.enable_cilium_clusterwide_network_policy
-
-  # https://cloud.google.com/kubernetes-engine/docs/how-to/cloud-dns
-  dns_config {
-    cluster_dns       = var.cluster_dns
-    cluster_dns_scope = var.cluster_dns_scope
-  }
-
-  gateway_api_config {
-    channel = var.gateway_api_channel
-  }
-
-  release_channel {
-    channel = var.release_channel
-  }
-
-  maintenance_policy {
-    daily_maintenance_window {
-      start_time = "03:00"
-    }
-  }
-
-  monitoring_config {
-    managed_prometheus {
-      enabled = var.enable_managed_prometheus
-    }
-
-    dynamic "advanced_datapath_observability_config" {
-      for_each = var.dataplane_v2_enabled ? [1] : []
-      content {
-        enable_metrics = var.enable_dpv2_metrics
-        enable_relay   = var.enable_dpv2_relay
-      }
-    }
-  }
-
-  workload_identity_config {
-    workload_pool = "${var.project_id}.svc.id.goog"
-  }
-
-  binary_authorization {
-    evaluation_mode = var.binary_auth_enabled ? "PROJECT_SINGLETON_POLICY_ENFORCE" : "DISABLED"
-  }
-
-  # https://cloud.google.com/kubernetes-engine/docs/concepts/cluster-autoscaler#autoscaling_profiles
-  # NOTE: this creates an additional node pool
-  dynamic "cluster_autoscaling" {
-    for_each = var.enable_cluster_autoscaling ? [1] : []
-    content {
-      enabled             = var.enable_cluster_autoscaling
-      autoscaling_profile = var.nap_profile
-
-      resource_limits {
-        resource_type = "cpu"
-        maximum       = var.nap_max_cpu
-      }
-
-      resource_limits {
-        resource_type = "memory"
-        maximum       = var.nap_max_memory
-      }
-    }
-  }
-
-  addons_config {
-    horizontal_pod_autoscaling {
-      disabled = lookup(var.addons_config, "hpa_disabled", false)
-    }
-
-    http_load_balancing {
-      disabled = lookup(var.addons_config, "http_lb_disabled", false)
-    }
-
-    gcp_filestore_csi_driver_config {
-      enabled = lookup(var.addons_config, "gcp_filestore_csi_driver_enabled", false)
-    }
-
-    gcs_fuse_csi_driver_config {
-      enabled = lookup(var.addons_config, "gcs_fuse_csi_driver_enabled", false)
-    }
-
-    gce_persistent_disk_csi_driver_config {
-      enabled = lookup(var.addons_config, "gce_pd_csi_driver_enabled", false)
-    }
-
-    gke_backup_agent_config {
-      enabled = lookup(var.addons_config, "gke_backup_agent_enabled", false)
-    }
-
-    config_connector_config {
-      enabled = lookup(var.addons_config, "config_connector_enabled", false)
-    }
-
-    ray_operator_config {
-      enabled = lookup(var.addons_config, "ray_operator_enabled", false)
-    }
-  }
-
-  lifecycle {
-    ignore_changes = [
-      dns_config,
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Principal = {
+          Service = "eks.amazonaws.com"
+        }
+        Action = "sts:AssumeRole"
+      },
     ]
-  }
+  })
 }
 
-
-#------------------------------------------------------
-# GKE Cluster Node Pool
-# https://registry.terraform.io/providers/hashicorp/google/latest/docs/resources/container_node_pool
-#------------------------------------------------------
-resource "random_pet" "node_pool" {
-  length = 1
+resource "aws_iam_role_policy_attachment" "eks_cluster_policy" {
+  policy_arn = "arn:aws:iam::aws:policy/AmazonEKSClusterPolicy"
+  role_name  = aws_iam_role.eks_cluster_role.name
 }
 
-resource "google_container_node_pool" "primary" {
-  provider = google-beta
+# EKS Node Group Role
+resource "aws_iam_role" "eks_node_role" {
+  name = "${var.cluster_name}-eks-node-role"
 
-  name     = random_pet.node_pool.id
-  location = var.regional ? var.region : var.zone
-  cluster  = google_container_cluster.primary.id
-
-  initial_node_count = var.initial_node_count
-  autoscaling {
-    min_node_count  = var.min_nodes
-    max_node_count  = var.max_nodes
-    location_policy = var.location_policy
-  }
-
-  management {
-    auto_repair  = true
-    auto_upgrade = var.auto_upgrade
-  }
-
-  node_config {
-    spot         = var.spot
-    preemptible  = var.preemptible
-    machine_type = var.machine_type
-    disk_size_gb = var.disk_size_gb
-    image_type   = var.image_type
-
-    shielded_instance_config {
-      enable_secure_boot          = var.shielded_vm_enable_secure_boot
-      enable_integrity_monitoring = var.shielded_vm_enable_integrity_monitoring
-    }
-
-    labels = {
-      mesh_id = "proj-${var.project_id}"
-    }
-
-    metadata = {
-      disable-legacy-endpoints = "true"
-    }
-
-    kubelet_config {
-      insecure_kubelet_readonly_port_enabled = "FALSE"
-    }
-
-    service_account = google_service_account.gke_sa.email
-    oauth_scopes    = var.oauth_scopes
-
-    dynamic "taint" {
-      for_each = var.taint
-      content {
-        key    = taint.value["key"]
-        value  = taint.value["value"]
-        effect = taint.value["effect"]
-      }
-    }
-
-    # https://registry.terraform.io/providers/hashicorp/google/latest/docs/resources/container_cluster#mode
-    # https://cloud.google.com/kubernetes-engine/docs/how-to/workload-identity#option_2_node_pool_modification
-    workload_metadata_config {
-      mode = var.workload_metadata_enabled ? "GKE_METADATA" : "GCE_METADATA"
-    }
-
-  }
-
-  lifecycle {
-    # nodes can be either a preemptible VM or a Spot VM, but not both
-    precondition {
-      condition     = !(var.preemptible && var.spot)
-      error_message = "Variables 'preemptible' and 'spot' cannot both be true"
-    }
-    ignore_changes = [
-      node_config[0].resource_labels,
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Principal = {
+          Service = "ec2.amazonaws.com"
+        }
+        Action = "sts:AssumeRole"
+      },
     ]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "eks_node_policy_1" {
+  policy_arn = "arn:aws:iam::aws:policy/AmazonEKSWorkerNodePolicy"
+  role_name  = aws_iam_role.eks_node_role.name
+}
+
+resource "aws_iam_role_policy_attachment" "eks_node_policy_2" {
+  policy_arn = "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly"
+  role_name  = aws_iam_role.eks_node_role.name
+}
+
+resource "aws_iam_role_policy_attachment" "eks_node_policy_3" {
+  policy_arn = "arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy"
+  role_name  = aws_iam_role.eks_node_role.name
+}
+
+
+# --- EKS Cluster ---
+
+resource "aws_eks_cluster" "main" {
+  name     = var.cluster_name
+  role_arn = aws_iam_role.eks_cluster_role.arn
+  vpc_config {
+    subnet_ids = [for s in aws_subnet.private : s.id]
+  }
+
+  # Add necessary K8s version, logging, etc.
+  version = "1.28" # Specify your desired Kubernetes version
+
+  depends_on = [
+    aws_iam_role_policy_attachment.eks_cluster_policy,
+    aws_subnet.private,
+    aws_subnet.public # EKS needs tags in both public and private subnets
+  ]
+}
+
+# --- EKS Managed Node Group ---
+
+resource "aws_eks_node_group" "main" {
+  cluster_name    = aws_eks_cluster.main.name
+  node_role_arn   = aws_iam_role.eks_node_role.arn
+  subnet_ids      = [for s in aws_subnet.private : s.id] # Launch nodes in private subnets
+  instance_types  = [var.node_instance_type]
+
+  scaling_config {
+    desired_size = var.desired_node_count
+    max_size     = var.max_node_count
+    min_size     = var.min_node_count
+  }
+
+  # Ensure the EKS cluster is created before the node group
+  depends_on = [
+    aws_iam_role_policy_attachment.eks_node_policy_1,
+    aws_iam_role_policy_attachment.eks_node_policy_2,
+    aws_iam_role_policy_attachment.eks_node_policy_3,
+    aws_eks_cluster.main
+  ]
+
+  # Add disk size, labels, taints as needed
+  # disk_size = 20 # Default is usually 20 GiB
+}
+
+# --- Add other AWS resources here (e.g., RDS, S3) ---
+
+/*
+# Example RDS instance (if you had a database in GCP)
+resource "aws_db_instance" "default" {
+  allocated_storage    = 20 # Check Free Tier limits
+  storage_type         = "gp2"
+  engine               = "mysql" # or postgres, etc.
+  engine_version       = "8.0"
+  instance_class       = var.db_instance_type # e.g., db.t3.micro
+  name                 = var.db_name
+  username             = "admin" # Replace with secure variable/secrets
+  password             = "password" # Replace with secure variable/secrets
+  identifier           = "${var.cluster_name}-db"
+  skip_final_snapshot  = true
+  vpc_security_group_ids = [aws_security_group.db.id] # Define a DB security group
+  publicly_accessible  = false # Keep false for security
+  db_subnet_group_name = aws_db_subnet_group.main.name # Define a DB subnet group
+
+  # Ensure database is in private subnets
+}
+
+resource "aws_db_subnet_group" "main" {
+  name       = "${var.cluster_name}-db-subnet-group"
+  subnet_ids = [for s in aws_subnet.private : s.id]
+  tags = {
+    Name = "${var.cluster_name}-db-subnet-group"
   }
 }
+
+# Example S3 Bucket (if you had GCS)
+resource "aws_s3_bucket" "my_bucket" {
+  bucket = "${var.cluster_name}-bucket" # Bucket names must be globally unique
+
+  tags = {
+    Name = "${var.cluster_name}-bucket"
+  }
+}
+*/

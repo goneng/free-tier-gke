@@ -1,56 +1,14 @@
-project_id = "my-project"
-region     = "northamerica-northeast1"
-zone       = "northamerica-northeast1-c"
+aws_region           = "us-east-1"
+cluster_name         = "free-tier-eks-myproject"
+vpc_cidr_block       = "10.0.0.0/16"
+public_subnet_cidrs  = ["10.0.1.0/24", "10.0.2.0/24"]
+private_subnet_cidrs = ["10.0.11.0/24", "10.0.12.0/24"]
+node_instance_type   = "t3.micro"
+desired_node_count   = 1
+max_node_count       = 2
+min_node_count       = 1
 
-gke_cluster_name = "playground"
-
-primary_ip_cidr          = "192.168.0.0/26" # max node IPs = 64 (max nodes = 60; 4 IPs reserved in every VPC)
-max_pods_per_node        = 32               # max pods per node <= half of max node IPs
-cluster_ipv4_cidr_block  = "10.0.0.0/18"    # max pod IPs = 15360 (60 * 256), CIDR must be able to cover for all the potential IPs
-services_ipv4_cidr_block = "10.1.0.0/20"
-
-release_channel = "RAPID"
-auto_upgrade    = true
-
-enable_managed_prometheus   = false
-enable_intranode_visibility = true
-
-# mutually exclusive with the the custom node taint example shown below
-# the custom node taint is required only for OSS Cilium
-dataplane_v2_enabled = true
-enable_dpv2_metrics  = false
-enable_dpv2_relay    = true
-
-machine_type = "e2-medium"
-disk_size_gb = 40
-max_nodes    = 1
-
-addons_config = {
-  gce_pd_csi_driver_enabled   = true  # required for Vault Injector
-}
-
-oauth_scopes = [
-  "https://www.googleapis.com/auth/cloud-platform",
-  "https://www.googleapis.com/auth/logging.write",
-  "https://www.googleapis.com/auth/monitoring",
-]
-
-workload_metadata_enabled = true
-
-# custom node taints
-#taint = [
-#  {
-#    key    = "node.cilium.io/agent-not-ready"
-#    value  = "true"
-#    effect = "NO_SCHEDULE"
-#  }
-#]
-
-
-# private GKE cluster settings
-enable_dns_endpoint            = true
-enable_private_endpoint        = true
-enable_private_nodes           = false               # ATTENTION: when enable_private_nodes = true, Cloud NAT will be provisioned
-master_authorized_network_cidr = "my.ext.ip.addr/32" # this gets used only if enable_private_endpoint = false
-master_ipv4_cidr_block         = "10.100.100.0/28"   # CIDR of GKE control-plane, this needs to be /28
-iap_proxy_ip_cidr              = "192.168.100.0/29"
+# Add values for other variables here if needed
+# db_instance_type = "db.t3.micro"
+# db_name          = "mydatabase"
+# ...

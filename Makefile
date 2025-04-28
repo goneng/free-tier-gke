@@ -1,10 +1,13 @@
-# Makefile for managing the free-tier GKE Terraform setup
+# Makefile for managing the minimal-cost AWS EKS Terraform setup
 
 # Variables (can be overridden)
-GCLOUD := $(shell command -v gcloud 2> /dev/null)
+AWS_CLI := $(shell command -v aws 2> /dev/null)
 TERRAFORM := $(shell command -v terraform 2> /dev/null)
-# Terraform resource address for the primary node pool
-NODE_POOL_TARGET := google_container_node_pool.primary_nodes
+# Default node count when starting nodes
+DEFAULT_NODE_COUNT := 1
+# Default AWS Region (should match variables.tf or environment)
+AWS_DEFAULT_REGION := $(shell aws configure get region || echo "us-east-1")
+
 
 # Default target - shows help message
 .PHONY: help
@@ -12,28 +15,30 @@ help:
 	@echo "Usage: make [target]"
 	@echo ""
 	@echo "Targets:"
-	@echo "  setup        Check prerequisites (gcloud, terraform, GOOGLE_CLOUD_PROJECT, auth)"
-	@echo "  ver          Show versions of gcloud and terraform"
+	@echo "  setup        Check prerequisites (aws cli, terraform, AWS credentials/region)"
+	@echo "  ver          Show versions of aws cli and terraform"
 	@echo "  init         Initialize Terraform (terraform init)"
-	@echo "  plan         Generate Terraform execution plan (terraform plan)"
-	@echo "  apply        Apply Terraform configuration (terraform apply)"
+	@echo "  plan         Generate Terraform execution plan (terraform plan -var='node_group_desired_size=$(DEFAULT_NODE_COUNT)')"
+	@echo "  apply        Apply Terraform configuration with default node count (terraform apply -var='node_group_desired_size=$(DEFAULT_NODE_COUNT)')"
 	@echo "  destroy      Destroy ALL Terraform-managed infrastructure (terraform destroy)"
-	@echo "  stop-nodes   Destroy ONLY the GKE node pool to reduce cost (terraform destroy -target=...)"
-	@echo "  start-nodes  Recreate ONLY the GKE node pool (terraform apply -target=...)"
+	@echo "  stop-nodes   Scale node group to 0 to reduce cost (terraform apply -var='node_group_desired_size=0')"
+	@echo "  start-nodes  Scale node group to default size ($(DEFAULT_NODE_COUNT)) (terraform apply -var='node_group_desired_size=$(DEFAULT_NODE_COUNT)')"
+	@echo "  kubeconfig   Generate kubectl config command"
 	@echo "  fmt          Format Terraform code (terraform fmt)"
 	@echo "  validate     Validate Terraform configuration (terraform validate)"
 
 # Check prerequisites
 .PHONY: setup
-setup: check_gcloud check_terraform check_project_id check_auth
+setup: check_aws_cli check_terraform check_aws_credentials
 	@echo "==> Prerequisite checks passed (Commands found)."
-	@echo "==> Ensure you have authenticated using 'gcloud auth application-default login'."
-	@echo "==> Ensure GOOGLE_CLOUD_PROJECT environment variable is set correctly."
+	@echo "==> Ensure AWS Credentials and Region are configured correctly."
+	@echo "    Current effective region: $(AWS_DEFAULT_REGION)"
 
-check_gcloud:
-ifndef GCLOUD
-	@echo "Error: 'gcloud' command not found."
-	@echo "Please install the Google Cloud SDK: https://cloud.google.com/sdk/docs/install"
+
+check_aws_cli:
+ifndef AWS_CLI
+	@echo "Error: 'aws' command not found."
+	@echo "Please install the AWS CLI: https://aws.amazon.com/cli/"
 	@exit 1
 endif
 
@@ -44,30 +49,22 @@ ifndef TERRAFORM
 	@exit 1
 endif
 
-check_project_id:
-ifndef GOOGLE_CLOUD_PROJECT
-	@echo "Warning: GOOGLE_CLOUD_PROJECT environment variable is not set."
-	@echo "Set it using: export GOOGLE_CLOUD_PROJECT=\"your-gcp-project-id\""
-	@echo "(Continuing, but Terraform might fail if project is not configured elsewhere)"
-else
-	@echo "==> GOOGLE_CLOUD_PROJECT is set to: $(GOOGLE_CLOUD_PROJECT)"
-endif
-
-check_auth:
-	@echo "==> Reminder: Authenticate with GCP using 'gcloud auth application-default login' if you haven't already."
+check_aws_credentials:
+	@echo "==> Checking AWS identity..."
+	@$(AWS_CLI) sts get-caller-identity || (echo "Error: Failed to get AWS identity. Configure credentials (e.g., run 'aws configure' or set ENV vars)." && exit 1)
 
 
 # Show versions
 .PHONY: ver
-ver: check_gcloud check_terraform
+ver: check_aws_cli check_terraform
 	@echo "==> Checking versions..."
-	@echo "--- gcloud ---"
-	@$(GCLOUD) version | grep "Google Cloud SDK"
-	@echo "--- terraform ---"
+	@echo "--- AWS CLI ---"
+	@$(AWS_CLI) --version
+	@echo "--- Terraform ---"
 	@$(TERRAFORM) version
 
 # Initialize Terraform
-# Downloads provider plugins
+# Downloads provider plugins and modules
 .PHONY: init
 init: setup
 	@echo "==> Initializing Terraform..."
@@ -75,40 +72,46 @@ init: setup
 
 # Generate Terraform execution plan
 # Shows what changes Terraform will make
+# Plans with default node count unless overridden
 .PHONY: plan
 plan: setup
-	@echo "==> Generating Terraform execution plan..."
-	@terraform plan
+	@echo "==> Generating Terraform execution plan (assuming $(DEFAULT_NODE_COUNT) node(s))..."
+	@terraform plan -var="node_group_desired_size=$(DEFAULT_NODE_COUNT)"
 
 # Apply Terraform configuration
 # Creates or updates infrastructure. Requires confirmation.
+# Applies with default node count unless overridden elsewhere (e.g., terraform.tfvars)
 .PHONY: apply
 apply: setup
-	@echo "==> Applying Terraform configuration..."
-	@terraform apply
+	@echo "==> Applying Terraform configuration (setting node count to $(DEFAULT_NODE_COUNT))..."
+	@terraform apply -var="node_group_desired_size=$(DEFAULT_NODE_COUNT)" -auto-approve
 
-# Destroy ONLY the node pool (costly part)
-# Leaves the cluster control plane and network resources. Requires confirmation.
+# Scale node group to 0
+# Requires confirmation.
 .PHONY: stop-nodes
 stop-nodes: setup
-	@echo "==> Destroying ONLY the GKE node pool ($(NODE_POOL_TARGET))..."
-	@terraform destroy -target=$(NODE_POOL_TARGET)
+	@echo "==> Scaling node group to 0..."
+	@terraform apply -var="node_group_desired_size=0" -auto-approve
 
-# Recreate ONLY the node pool
-# Use this after 'stop-nodes' to bring the cluster back online. Requires confirmation.
-# Note: Using -target for apply can be risky. Running 'make apply' might be safer
-# as it ensures the rest of the configuration is also in the desired state.
+# Scale node group to default size
+# Requires confirmation.
 .PHONY: start-nodes
 start-nodes: setup
-	@echo "==> Recreating ONLY the GKE node pool ($(NODE_POOL_TARGET))..."
-	@terraform apply -target=$(NODE_POOL_TARGET)
+	@echo "==> Scaling node group to $(DEFAULT_NODE_COUNT)..."
+	@terraform apply -var="node_group_desired_size=$(DEFAULT_NODE_COUNT)" -auto-approve
 
 # Destroy ALL Terraform-managed infrastructure
 # Removes all resources defined in the configuration. Requires confirmation.
 .PHONY: destroy
 destroy: setup
 	@echo "==> Destroying ALL Terraform infrastructure..."
-	@terraform destroy
+	@terraform destroy -auto-approve
+
+# Output command to configure kubectl
+.PHONY: kubeconfig
+kubeconfig:
+	@echo "==> Run the following command to configure kubectl:"
+	@terraform output -raw configure_kubectl
 
 # Format Terraform code
 # Rewrites configuration files to a canonical format

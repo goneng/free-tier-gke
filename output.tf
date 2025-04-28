@@ -1,14 +1,43 @@
-output "_connection_string" {
-  value       = var.enable_private_endpoint && !var.enable_dns_endpoint ? "gcloud container clusters get-credentials ${var.gke_cluster_name} --zone ${var.zone} --project ${var.project_id} --internal-ip" : (var.enable_dns_endpoint ? "gcloud container clusters get-credentials ${var.gke_cluster_name} --zone ${var.zone} --project ${var.project_id} --dns-endpoint" : "gcloud container clusters get-credentials ${var.gke_cluster_name} --zone ${var.zone} --project ${var.project_id}")
-  description = "CLI command used to obtain Kubernetes credentials for the GKE cluster."
+# outputs.tf
+output "vpc_id" {
+  description = "The ID of the VPC."
+  value       = aws_vpc.main.id
 }
 
-output "dns_endpoint" {
-  value       = var.enable_dns_endpoint ? google_container_cluster.primary.control_plane_endpoints_config[0].dns_endpoint_config[0].endpoint : "DNS-based endpoint not enabled"
-  description = "GKE DNS endpoint"
+output "public_subnet_ids" {
+  description = "IDs of the public subnets."
+  value       = [for s in aws_subnet.public : s.id]
 }
 
-output "create_iap_tunnel" {
-  value       = var.enable_private_endpoint && !var.enable_dns_endpoint ? "gcloud compute ssh ${google_compute_instance.iap-proxy[0].name} --zone ${var.zone} --project ${var.project_id} -- -L 8888:localhost:8888 -N -q -f" : "Private IP-based endpoint not enabled"
-  description = "CLI command use to enable IAP tunnel to GCE VM instance to forward kubectl commands."
+output "private_subnet_ids" {
+  description = "IDs of the private subnets."
+  value       = [for s in aws_subnet.private : s.id]
 }
+
+output "eks_cluster_name" {
+  description = "The name of the EKS cluster."
+  value       = aws_eks_cluster.main.name
+}
+
+output "eks_cluster_endpoint" {
+  description = "The endpoint for the EKS cluster."
+  value       = aws_eks_cluster.main.endpoint
+}
+
+output "eks_cluster_certificate_authority_data" {
+  description = "The base64-encoded certificate data required to communicate with the cluster."
+  value       = aws_eks_cluster.main.certificate_authority[0].data
+}
+
+# Add other outputs for other resources (RDS endpoint, S3 bucket name, etc.)
+/*
+output "db_endpoint" {
+  description = "The connection endpoint for the RDS database."
+  value       = aws_db_instance.default.address
+}
+
+output "s3_bucket_name" {
+  description = "The name of the S3 bucket."
+  value       = aws_s3_bucket.my_bucket.id
+}
+*/
