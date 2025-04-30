@@ -3,6 +3,8 @@
 # Variables (can be overridden)
 GCLOUD := $(shell command -v gcloud 2> /dev/null)
 TERRAFORM := $(shell command -v terraform 2> /dev/null)
+# Terraform resource address for the primary node pool
+NODE_POOL_TARGET := google_container_node_pool.primary_nodes
 
 # Default target - shows help message
 .PHONY: help
@@ -10,15 +12,17 @@ help:
 	@echo "Usage: make [target]"
 	@echo ""
 	@echo "Targets:"
-	@echo "  setup		Check prerequisites (gcloud, terraform, GOOGLE_CLOUD_PROJECT, auth)"
-	@echo "  ver		Show versions of gcloud and terraform"
-	@echo "  init		Initialize Terraform (terraform init)"
-	@echo "  plan		Generate Terraform execution plan (terraform plan)"
-	@echo "  apply		Apply Terraform configuration (terraform apply)"
-	@echo "  destroy	Destroy Terraform-managed infrastructure (terraform destroy)"
-	@echo "  console	Open Terraform console (terraform console)"
-	@echo "  fmt		Format Terraform code (terraform fmt)"
-	@echo "  validate	Validate Terraform configuration (terraform validate)"
+	@echo "  setup        Check prerequisites (gcloud, terraform, GOOGLE_CLOUD_PROJECT, auth)"
+	@echo "  ver          Show versions of gcloud and terraform"
+	@echo "  init         Initialize Terraform (terraform init)"
+	@echo "  plan         Generate Terraform execution plan (terraform plan)"
+	@echo "  apply        Apply Terraform configuration (terraform apply)"
+	@echo "  destroy      Destroy ALL Terraform-managed infrastructure (terraform destroy)"
+	@echo "  stop-nodes   Destroy ONLY the GKE node pool to reduce cost (terraform destroy -target=...)"
+	@echo "  start-nodes  Recreate ONLY the GKE node pool (terraform apply -target=...)"
+	@echo "  console      Open Terraform console (terraform console)"
+	@echo "  fmt          Format Terraform code (terraform fmt)"
+	@echo "  validate     Validate Terraform configuration (terraform validate)"
 	@echo ""
 
 
@@ -94,10 +98,30 @@ apply: setup
 
 .PHONY: destroy
 destroy: setup
-	@echo "==> Destroying Terraform infrastructure..."
+	@echo "==> Destroying ALL Terraform infrastructure..."
 	@echo "    (Removing all resources defined in the configuration)"
 	@echo ""
 	@terraform destroy
+
+
+.PHONY: stop-nodes
+stop-nodes: setup
+	@echo "==> Destroying ONLY the GKE node pool ($(NODE_POOL_TARGET))..."
+	@echo "    (Leaving the cluster control plane and network resources)"
+	@echo ""
+	@terraform destroy -target=$(NODE_POOL_TARGET)
+
+
+.PHONY: start-nodes
+start-nodes: setup
+	@echo "==> Recreating ONLY the GKE node pool ($(NODE_POOL_TARGET))..."
+	@echo "    (Use this after 'stop-nodes' to bring the cluster back online)"
+	@echo ""
+	@echo "Note: Using -target for apply can be risky."
+	@echo "      Running 'make apply' might be safer than 'make start-nodes'"
+	@echo "      as it ensures the rest of the configuration is also in the desired state."
+	@echo ""
+	@terraform apply -target=$(NODE_POOL_TARGET)
 
 
 .PHONY: console
